@@ -1,0 +1,5 @@
+{
+  "name": "logfire-session-capture",
+  "version": "0.2.0",
+  "description": "Captures all Claude Code session events and sends them as OpenTelemetry traces to Pydantic Logfire, with local JSONL fallback."
+}
