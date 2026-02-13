@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash $CLAUDE_PLUGIN_ROOT/scripts/log-event.sh",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/log-event.sh\"",
             "timeout": 10
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash $CLAUDE_PLUGIN_ROOT/scripts/log-event.sh",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/log-event.sh\"",
             "timeout": 10
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash $CLAUDE_PLUGIN_ROOT/scripts/log-event.sh",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/log-event.sh\"",
             "timeout": 10
           }
         ]
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash $CLAUDE_PLUGIN_ROOT/scripts/log-event.sh",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/log-event.sh\"",
             "timeout": 10
           }
         ]
@@ -54,7 +54,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash $CLAUDE_PLUGIN_ROOT/scripts/log-event.sh",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/log-event.sh\"",
             "timeout": 10
           }
         ]
@@ -66,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash $CLAUDE_PLUGIN_ROOT/scripts/log-event.sh",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/log-event.sh\"",
             "timeout": 10
           }
         ]
@@ -78,7 +78,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash $CLAUDE_PLUGIN_ROOT/scripts/log-event.sh",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/log-event.sh\"",
             "timeout": 10
           }
         ]
@@ -90,7 +90,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash $CLAUDE_PLUGIN_ROOT/scripts/log-event.sh",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/log-event.sh\"",
             "timeout": 10
           }
         ]
@@ -102,7 +102,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash $CLAUDE_PLUGIN_ROOT/scripts/log-event.sh",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/log-event.sh\"",
             "timeout": 10
           }
         ]

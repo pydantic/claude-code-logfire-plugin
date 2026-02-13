@@ -20,7 +20,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 import logfire
 from opentelemetry import trace
@@ -39,7 +39,7 @@ def build_traceparent() -> str:
     return carrier["traceparent"]
 
 
-def main():
+def main() -> int:
     prompt = sys.argv[1] if len(sys.argv) > 1 else "Say hello"
 
     with logfire.span("orchestrate claude-code", prompt=prompt):
@@ -50,14 +50,16 @@ def main():
         env["TRACEPARENT"] = traceparent
         env.pop("CLAUDECODE", None)
 
-        subprocess.run(
+        result = subprocess.run(
             ["claude", "--print", "--plugin-dir", PLUGIN_DIR, "--", prompt],
             env=env,
         )
+        if result.returncode != 0:
+            print(f"claude exited with code {result.returncode}", file=sys.stderr)
 
-    # flush pending spans before exit
     trace.get_tracer_provider().force_flush()  # type: ignore[union-attr]
+    return result.returncode
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

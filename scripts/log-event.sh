@@ -4,7 +4,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # log-event.sh -- Pydantic-AI compatible OTel trace exporter for Claude Code
 #
-# Mode 1 (always): Append JSONL to local log file
+# Mode 1 (if LOGFIRE_LOCAL_LOG set): Append JSONL to local log file
 # Mode 2 (if LOGFIRE_TOKEN set): Send OTel spans to Logfire via OTLP/HTTP JSON
 #
 # Trace hierarchy (pydantic-ai style):
@@ -14,14 +14,29 @@ set -euo pipefail
 #   ...
 # ---------------------------------------------------------------------------
 
+ENABLE_LOCAL_LOG="${LOGFIRE_LOCAL_LOG:-false}"
+ENABLE_DIAGNOSTICS="${LOGFIRE_DIAGNOSTICS:-false}"
 LOG_DIR="${CLAUDE_PROJECT_DIR:-.}/.claude/logs"
-LOG_FILE="$LOG_DIR/session-events.jsonl"
-DIAG_LOG="$LOG_DIR/diagnostics.jsonl"
-mkdir -p "$LOG_DIR"
+
+if [ "$ENABLE_LOCAL_LOG" = "true" ] || [ "$ENABLE_LOCAL_LOG" = "1" ]; then
+  LOG_FILE="$LOG_DIR/session-events.jsonl"
+  mkdir -p "$LOG_DIR"
+else
+  LOG_FILE=""
+fi
+
+if [ "$ENABLE_DIAGNOSTICS" = "true" ] || [ "$ENABLE_DIAGNOSTICS" = "1" ] \
+   || [ "$ENABLE_LOCAL_LOG" = "true" ] || [ "$ENABLE_LOCAL_LOG" = "1" ]; then
+  DIAG_LOG="$LOG_DIR/diagnostics.jsonl"
+  mkdir -p "$LOG_DIR"
+else
+  DIAG_LOG=""
+fi
 
 # --- Diagnostics -----------------------------------------------------------
 
 log_diag() {
+  [ -z "$DIAG_LOG" ] && return 0
   local level="$1" msg="$2"
   shift 2
   local extra="${1:-}"
@@ -53,7 +68,7 @@ _SESSION_ID=$(echo "$input" | jq -r '.session_id // "unknown"' 2>/dev/null || ec
 
 if [ "$_HOOK_EVENT" = "parse_error" ] || [ "$_SESSION_ID" = "parse_error" ]; then
   log_diag "error" "Failed to parse hook input JSON" "${input:0:500}"
-  exit 1
+  exit 0
 fi
 
 timestamp=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")
@@ -61,9 +76,11 @@ if [[ "$timestamp" == *N* ]]; then
   timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 fi
 
-# --- JSONL logging (always) ------------------------------------------------
-if ! echo "$input" | jq -c --arg ts "$timestamp" '. + {captured_at: $ts}' >> "$LOG_FILE" 2>/dev/null; then
-  log_diag "error" "Failed to write JSONL log entry"
+# --- JSONL logging (opt-in via LOGFIRE_LOCAL_LOG) --------------------------
+if [ -n "$LOG_FILE" ]; then
+  if ! echo "$input" | jq -c --arg ts "$timestamp" '. + {captured_at: $ts}' >> "$LOG_FILE" 2>/dev/null; then
+    log_diag "error" "Failed to write JSONL log entry"
+  fi
 fi
 
 # --- OTel via Logfire (if token set) ---------------------------------------
@@ -111,10 +128,12 @@ send_otlp() {
     -H "Authorization: Bearer $LOGFIRE_TOKEN" \
     -d "$payload" 2>/dev/null) || {
     log_diag "warn" "curl failed (network/timeout)"
+    echo "[logfire-plugin] OTLP export failed (network/timeout)" >&2
     return 0
   }
   if [ "$http_code" -ge 400 ] 2>/dev/null; then
     log_diag "warn" "OTLP export failed" "http_status=$http_code"
+    echo "[logfire-plugin] OTLP export failed (HTTP $http_code)" >&2
   fi
 }
 
@@ -251,6 +270,46 @@ ts_nano=$(now_nano)
 transcript_path=$(echo "$input" | jq -r '.transcript_path // empty')
 
 STATE_FILE="${TMPDIR:-/tmp}/claude-logfire-${session_id}.json"
+LOCK_FILE="${STATE_FILE}.lock"
+
+# Atomic state file update: write to a unique temp file, then mv (POSIX atomic rename).
+update_state() {
+  local tmpfile
+  tmpfile=$(mktemp "${STATE_FILE}.XXXXXX") || return 1
+  if "$@" > "$tmpfile" 2>/dev/null; then
+    mv "$tmpfile" "$STATE_FILE"
+  else
+    rm -f "$tmpfile"
+    return 1
+  fi
+}
+
+# Cross-platform session lock using mkdir (atomic on all POSIX systems).
+# flock is Linux-only; mkdir works on macOS too.
+acquire_lock() {
+  local attempts=0
+  while ! mkdir "$LOCK_FILE" 2>/dev/null; do
+    # Stale lock cleanup: if lock dir is older than 30s, previous holder likely crashed
+    if [ -d "$LOCK_FILE" ]; then
+      local lock_age
+      lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK_FILE" 2>/dev/null || stat -c %Y "$LOCK_FILE" 2>/dev/null || echo 0) ))
+      if [ "$lock_age" -gt 30 ]; then
+        rmdir "$LOCK_FILE" 2>/dev/null || true
+        continue
+      fi
+    fi
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 50 ]; then
+      log_diag "warn" "Could not acquire session lock after 5s"
+      return 1
+    fi
+    sleep 0.1
+  done
+}
+
+release_lock() {
+  rmdir "$LOCK_FILE" 2>/dev/null || true
+}
 
 # --- Parse transcript slice ------------------------------------------------
 # Reads new transcript lines since last_line, deduplicates streaming fragments,
@@ -401,8 +460,7 @@ parse_transcript_slice() {
 
     # Update state with new line count
     if [ -f "$STATE_FILE" ]; then
-      jq -c --arg ll "$total_lines" '.last_line = ($ll | tonumber)' "$STATE_FILE" > "${STATE_FILE}.tmp" 2>/dev/null \
-        && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+      update_state jq -c --arg ll "$total_lines" '.last_line = ($ll | tonumber)' "$STATE_FILE"
     fi
 
     if [ "$result" = "[]" ] && [ "$attempt" -lt "$max_attempts" ]; then
@@ -466,6 +524,9 @@ case "$hook_event" in
       log_diag "warn" "Stop without state file, skipping"
       exit 0
     fi
+
+    acquire_lock || exit 0
+    trap 'release_lock' EXIT
 
     state=$(cat "$STATE_FILE")
     root_span_id=$(echo "$state" | jq -r '.root_span_id')
@@ -593,7 +654,7 @@ print(int(ts.timestamp() * 1e9))
     fi
 
     # Accumulate into state file
-    jq -c \
+    update_state jq -c \
       --argjson new_msgs "$accumulated_messages" \
       --argjson new_costs "$accumulated_cost_details" \
       --argjson add_input "$total_input" \
@@ -607,7 +668,7 @@ print(int(ts.timestamp() * 1e9))
         .usage.output_tokens += $add_output |
         .usage.cache_creation_input_tokens += $add_cache_create |
         .usage.cache_read_input_tokens += $add_cache_read
-      ' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+      ' "$STATE_FILE"
     ;;
 
   SessionEnd)
@@ -615,6 +676,9 @@ print(int(ts.timestamp() * 1e9))
       log_diag "warn" "SessionEnd without state file, skipping root span"
       exit 0
     fi
+
+    acquire_lock || exit 0
+    trap 'release_lock' EXIT
 
     state=$(cat "$STATE_FILE")
     root_span_id=$(echo "$state" | jq -r '.root_span_id')
@@ -667,7 +731,7 @@ print(int(ts.timestamp() * 1e9))
                 {attributes: {"gen_ai.operation.name":"chat","gen_ai.provider.name":"anthropic","gen_ai.request.model":$model,"gen_ai.response.model":$model,"gen_ai.system":"anthropic","gen_ai.token.type":"output"}, total: $output_cost}
               ]')
 
-            jq -c \
+            update_state jq -c \
               --argjson new_msgs "$(echo "[$call_input_msgs, $call_output_msgs]" | jq -c 'add')" \
               --argjson new_costs "$cost_detail" \
               --argjson add_input "$input_tokens" \
@@ -681,13 +745,13 @@ print(int(ts.timestamp() * 1e9))
                 .usage.output_tokens += $add_output |
                 .usage.cache_creation_input_tokens += $add_cache_create |
                 .usage.cache_read_input_tokens += $add_cache_read
-              ' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+              ' "$STATE_FILE"
           else
-            jq -c \
+            update_state jq -c \
               --argjson new_msgs "$(echo "[$call_input_msgs, $call_output_msgs]" | jq -c 'add')" \
               '
                 .all_messages += $new_msgs
-              ' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+              ' "$STATE_FILE"
           fi
         done
 

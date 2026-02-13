@@ -46,6 +46,7 @@ export LOGFIRE_BASE_URL="https://logfire-eu.pydantic.dev"
 | `LOGFIRE_TOKEN` | Yes | _(none)_ | Logfire write token |
 | `LOGFIRE_BASE_URL` | No | `https://logfire-us.pydantic.dev` | Logfire ingest endpoint |
 | `LOGFIRE_LOCAL_LOG` | No | `false` | Set to `true` to write JSONL event logs locally |
+| `LOGFIRE_DIAGNOSTICS` | No | `false` | Set to `true` to write diagnostic logs (enabled automatically when `LOGFIRE_LOCAL_LOG` is set) |
 
 Without `LOGFIRE_TOKEN`, no traces are sent. The plugin does nothing unless at least one of `LOGFIRE_TOKEN` or `LOGFIRE_LOCAL_LOG` is set.
 
@@ -82,6 +83,39 @@ See [`examples/distributed-tracing.py`](examples/distributed-tracing.py) for a c
 ## Local JSONL log
 
 Set `LOGFIRE_LOCAL_LOG=true` to write all hook events as JSON Lines to `.claude/logs/session-events.jsonl` in the project directory. This is off by default.
+
+## Data collected
+
+When `LOGFIRE_TOKEN` is set, the plugin sends the following data to Logfire as OpenTelemetry span attributes:
+
+| Data | Span | Attribute |
+|---|---|---|
+| Full conversation (user prompts, assistant responses, tool calls and results) | Root span | `pydantic_ai.all_messages` |
+| Per-call input/output messages | Child spans | `gen_ai.input.messages`, `gen_ai.output.messages` |
+| Token counts | Child spans | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` |
+| Cost in USD | Child spans | `operation.cost` |
+| Model name | Both | `gen_ai.request.model` |
+| Working directory | Root span | `session.cwd` |
+| Assistant thinking blocks | Child spans | Included in `gen_ai.output.messages` |
+
+**Privacy note:** Conversation data sent to Logfire may contain sensitive information including file contents read by Claude, tool outputs, environment details, and any text in the conversation. Logfire data is stored according to [Pydantic's privacy policy](https://pydantic.dev/privacy). If this is a concern, use `LOGFIRE_LOCAL_LOG=true` without `LOGFIRE_TOKEN` to keep all data local.
+
+## Troubleshooting
+
+**Enable diagnostics** to see what the plugin is doing:
+
+```bash
+export LOGFIRE_DIAGNOSTICS=true
+```
+
+Diagnostic logs are written to `.claude/logs/diagnostics.jsonl` in the project directory.
+
+**Common issues:**
+
+- **No traces appearing in Logfire** -- Check that `LOGFIRE_TOKEN` is set and valid. Enable diagnostics to see if OTLP exports are failing.
+- **`jq: command not found`** -- Install jq: `brew install jq` (macOS) or `apt install jq` (Linux).
+- **Export errors (HTTP 401/403)** -- Your Logfire token may be invalid or expired. Generate a new write token in the Logfire console.
+- **Export errors (HTTP 4xx/5xx)** -- Check `LOGFIRE_BASE_URL` if using a non-default region. The plugin logs HTTP status codes to stderr and diagnostics.
 
 ## How it works
 
