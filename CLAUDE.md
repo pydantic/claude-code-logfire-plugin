@@ -28,7 +28,7 @@ agent run (root span)              <- the session (emitted on SessionEnd)
 
 | Hook Event | JSONL | OTLP |
 |---|---|---|
-| SessionStart | yes | none (initializes state file) |
+| SessionStart | yes | pending root span (`logfire.span_type=pending_span`) |
 | Stop / SubagentStop | yes | "chat {model}" child spans per LLM API call |
 | SessionEnd | yes | finalized root "agent run" span with all_messages, usage, cost |
 | All other events | yes | none (early exit) |

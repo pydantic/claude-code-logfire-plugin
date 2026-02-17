@@ -145,10 +145,9 @@ def build_span(
     end_ns: int,
     attrs: list[dict],
 ) -> dict:
-    return {
+    span: dict = {
         "traceId": trace_id,
         "spanId": span_id,
-        "parentSpanId": parent_span_id,
         "name": name,
         "kind": 1,
         "startTimeUnixNano": str(start_ns),
@@ -156,6 +155,9 @@ def build_span(
         "attributes": attrs,
         "status": {"code": 1},
     }
+    if parent_span_id:
+        span["parentSpanId"] = parent_span_id
+    return span
 
 
 def build_otlp_envelope(spans: list[dict]) -> dict:
@@ -382,6 +384,58 @@ def _convert_output_message(line: dict) -> dict:
     return {"role": "assistant", "parts": parts, "finish_reason": finish_reason}
 
 
+def _merge_assistant_content(base: dict, new: dict) -> None:
+    """Merge a streaming assistant fragment into the base message.
+
+    Claude Code writes each new content block (text, thinking, tool_use) as a
+    separate transcript line sharing the same message.id.  We accumulate all
+    blocks into the base message's content array, deduplicating tool_use blocks
+    by their unique ``id`` field.  Text and thinking blocks are replaced by the
+    latest version (the last fragment is the most complete for those types).
+    """
+    base_msg = base.setdefault("message", {})
+    base_content = base_msg.setdefault("content", [])
+    new_content = new.get("message", {}).get("content", [])
+
+    seen_tool_ids = {
+        b["id"] for b in base_content
+        if isinstance(b, dict) and b.get("type") == "tool_use" and "id" in b
+    }
+
+    for block in new_content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "tool_use":
+            if block.get("id") not in seen_tool_ids:
+                base_content.append(block)
+                seen_tool_ids.add(block["id"])
+        elif btype == "thinking":
+            for i, b in enumerate(base_content):
+                if isinstance(b, dict) and b.get("type") == "thinking":
+                    base_content[i] = block
+                    break
+            else:
+                base_content.append(block)
+        elif btype == "text":
+            for i in range(len(base_content) - 1, -1, -1):
+                if isinstance(base_content[i], dict) and base_content[i].get("type") == "text":
+                    base_content[i] = block
+                    break
+            else:
+                base_content.append(block)
+        else:
+            base_content.append(block)
+
+    new_msg = new.get("message", {})
+    if new_msg.get("stop_reason") is not None:
+        base_msg["stop_reason"] = new_msg["stop_reason"]
+    if new_msg.get("usage"):
+        base_msg["usage"] = new_msg["usage"]
+    if new.get("timestamp"):
+        base["timestamp"] = new["timestamp"]
+
+
 def parse_transcript_slice(transcript_path: str | None, last_line: int) -> tuple[list[dict], int]:
     """Parse new transcript lines, returning (api_calls, new_total_lines).
 
@@ -422,7 +476,9 @@ def parse_transcript_slice(transcript_path: str | None, last_line: int) -> tuple
         # Keep only user and assistant lines
         relevant = [l for l in parsed if l.get("type") in ("user", "assistant")]
 
-        # Deduplicate assistant streaming fragments: keep last per message.id
+        # Merge assistant streaming fragments by message.id.
+        # Claude Code writes each content block as a separate fragment,
+        # so we must collect all blocks to reconstruct the full message.
         seen: dict[str, dict] = {}
         order: list[str] = []
         for l in relevant:
@@ -433,7 +489,11 @@ def parse_transcript_slice(transcript_path: str | None, last_line: int) -> tuple
             key = str(key)
             if key not in seen:
                 order.append(key)
-            seen[key] = l
+                seen[key] = l
+            elif l.get("type") == "assistant":
+                _merge_assistant_content(seen[key], l)
+            else:
+                seen[key] = l
         deduped = [seen[k] for k in order]
 
         # Sort by timestamp
@@ -495,7 +555,10 @@ def _describe_call(input_messages: list[dict]) -> str:
     """
     tool_names: list[str] = []
     has_tool_results = False
+    has_user_input = False
     for msg in input_messages:
+        if msg.get("role") == "user":
+            has_user_input = True
         for part in msg.get("parts", []):
             if part.get("type") == "tool_call":
                 name = part.get("name", "")
@@ -507,7 +570,9 @@ def _describe_call(input_messages: list[dict]) -> str:
         return "Tool: " + ", ".join(tool_names)
     if has_tool_results:
         return "tool result"
-    return "User input"
+    if has_user_input:
+        return "User input"
+    return "response"
 
 
 def build_child_spans_from_calls(
@@ -555,7 +620,11 @@ def build_child_spans_from_calls(
 
         call_input_msgs = call.get("input_messages", [])
         call_output_msgs = call.get("output_messages", [])
-        new_messages.extend(call_input_msgs)
+        # Only add user-role messages from input to all_messages;
+        # the previous assistant message is already present as output of the prior call
+        for msg in call_input_msgs:
+            if msg.get("role") == "user":
+                new_messages.append(msg)
         new_messages.extend(call_output_msgs)
 
         # Span timing
@@ -608,48 +677,82 @@ def build_child_spans_from_calls(
 def handle_session_start(
     inp: dict,
     state_file: str,
+    lock_file: str,
     ts_nano: int,
     transcript_path: str,
     parent_span_id_from_env: str,
+    trace_id: str,
+    otlp_endpoint: str,
+    logfire_token: str,
+    session_id: str,
 ) -> None:
-    root_span_id = random_span_id()
-    cwd = inp.get("cwd", "")
-    model = inp.get("model", "")
-    term_program = os.environ.get("TERM_PROGRAM", "")
+    if not acquire_lock(lock_file):
+        return
+    try:
+        root_span_id = random_span_id()
+        cwd = inp.get("cwd", "")
+        model = inp.get("model", "")
+        term_program = os.environ.get("TERM_PROGRAM", "")
 
-    initial_line = 0
-    if transcript_path and os.path.isfile(transcript_path):
+        initial_line = 0
+        if transcript_path and os.path.isfile(transcript_path):
+            try:
+                with open(transcript_path) as f:
+                    initial_line = sum(1 for _ in f)
+            except OSError:
+                pass
+
+        # Clean up stale state
         try:
-            with open(transcript_path) as f:
-                initial_line = sum(1 for _ in f)
+            os.unlink(state_file)
         except OSError:
             pass
 
-    # Clean up stale state
-    try:
-        os.unlink(state_file)
-    except OSError:
-        pass
+        state = {
+            "root_span_id": root_span_id,
+            "parent_span_id": parent_span_id_from_env,
+            "start_time": str(ts_nano),
+            "cwd": cwd,
+            "model": model,
+            "term_program": term_program,
+            "transcript_path": transcript_path,
+            "last_line": initial_line,
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            },
+            "cost_details": [],
+            "all_messages": [],
+        }
+        write_state(state_file, state)
 
-    state = {
-        "root_span_id": root_span_id,
-        "parent_span_id": parent_span_id_from_env,
-        "start_time": str(ts_nano),
-        "cwd": cwd,
-        "model": model,
-        "term_program": term_program,
-        "transcript_path": transcript_path,
-        "last_line": initial_line,
-        "usage": {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-        },
-        "cost_details": [],
-        "all_messages": [],
-    }
-    write_state(state_file, state)
+        # Emit a pending span so Logfire shows the session as in-progress
+        pending_span_id = random_span_id()
+        attrs = [
+            make_attr("logfire.msg", "Claude Code session"),
+            make_attr("logfire.span_type", "pending_span"),
+            make_attr("logfire.pending_parent_id", parent_span_id_from_env or "0000000000000000"),
+            make_attr("agent_name", "claude-code"),
+            make_attr("gen_ai.agent.name", "claude-code"),
+            make_attr("gen_ai.system", "anthropic"),
+            make_attr("session.id", session_id),
+        ]
+        if model:
+            attrs.append(make_attr("gen_ai.response.model", model))
+            attrs.append(make_attr("model_name", model))
+        if cwd:
+            attrs.append(make_attr("session.cwd", cwd))
+
+        span = build_span(
+            trace_id, pending_span_id, root_span_id,
+            "Claude Code session", ts_nano, ts_nano, attrs,
+        )
+        payload = build_otlp_envelope([span])
+        send_otlp(payload, otlp_endpoint, logfire_token)
+    finally:
+        release_lock(lock_file)
 
 
 def handle_stop(
@@ -662,14 +765,14 @@ def handle_stop(
     otlp_endpoint: str,
     logfire_token: str,
 ) -> None:
-    state = read_state(state_file)
-    if not state:
-        log_diag("warn", "Stop without state file, skipping")
-        return
-
     if not acquire_lock(lock_file):
         return
     try:
+        state = read_state(state_file)
+        if not state:
+            log_diag("warn", "Stop without state file, skipping")
+            return
+
         root_span_id = state["root_span_id"]
         last_line = state.get("last_line", 0)
         model_default = state.get("model", "")
@@ -881,7 +984,7 @@ def main() -> None:
     lock_file = f"{state_file}.lock"
 
     if hook_event == "SessionStart":
-        handle_session_start(inp, state_file, ts_nano, transcript_path, parent_span_id_from_env)
+        handle_session_start(inp, state_file, lock_file, ts_nano, transcript_path, parent_span_id_from_env, trace_id, otlp_endpoint, logfire_token, session_id)
     elif hook_event in ("Stop", "SubagentStop"):
         handle_stop(inp, state_file, lock_file, trace_id, ts_nano, transcript_path, otlp_endpoint, logfire_token)
     elif hook_event == "SessionEnd":
