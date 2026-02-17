@@ -12,11 +12,7 @@ Each session becomes a trace with child spans per LLM API call, with full token 
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
 - A [Logfire](https://logfire.pydantic.dev) project with a write token
-- `jq` — JSON processing (`brew install jq` on macOS, `apt install jq` on Linux)
-- `curl` — sends OTLP/HTTP traces to Logfire
-- `xxd` — generates random span IDs (pre-installed on macOS; `apt install xxd` on Linux)
-- `shasum` — derives deterministic trace IDs (pre-installed on macOS; part of `perl` on Linux)
-- `python3` — optional, used for nanosecond-precision timestamps and ISO date conversion; falls back to second-precision if unavailable
+- `python3` (3.7+) — pre-installed on macOS and most Linux distributions; uses stdlib only (no pip dependencies)
 
 ### Install the plugin
 
@@ -113,13 +109,12 @@ Diagnostic logs are written to `.claude/logs/diagnostics.jsonl` in the project d
 **Common issues:**
 
 - **No traces appearing in Logfire** -- Check that `LOGFIRE_TOKEN` is set and valid. Enable diagnostics to see if OTLP exports are failing.
-- **`jq: command not found`** -- Install jq: `brew install jq` (macOS) or `apt install jq` (Linux).
 - **Export errors (HTTP 401/403)** -- Your Logfire token may be invalid or expired. Generate a new write token in the Logfire console.
 - **Export errors (HTTP 4xx/5xx)** -- Check `LOGFIRE_BASE_URL` if using a non-default region. The plugin logs HTTP status codes to stderr and diagnostics.
 
 ## How it works
 
-The plugin is a single bash script ([`scripts/log-event.sh`](scripts/log-event.sh)) invoked by Claude Code hooks on every session event. On `Stop` events it parses the transcript file to extract per-API-call data (deduplicating streaming fragments) and sends OTLP/HTTP JSON to Logfire. On `SessionEnd` it sends the root span with the accumulated conversation.
+The plugin is a single Python script ([`scripts/log-event.py`](scripts/log-event.py), stdlib only) invoked by Claude Code hooks on every session event. On `Stop` events it parses the transcript file to extract per-API-call data (deduplicating streaming fragments) and sends OTLP/HTTP JSON to Logfire. On `SessionEnd` it sends the root span with the accumulated conversation.
 
 State is persisted in a temp file between hook invocations. The `trace_id` is deterministically derived from `session_id` via SHA-256.
 
