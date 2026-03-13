@@ -231,7 +231,8 @@ def send_otlp(payload: dict, endpoint: str, token: str) -> None:
         data=data,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
+            "Authorization": token,
+            "User-Agent": f"logfire/{VERSION}",
         },
         method="POST",
     )
