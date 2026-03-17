@@ -232,6 +232,7 @@ def send_otlp(payload: dict, endpoint: str, token: str) -> None:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
+            "User-Agent": "claude-code-logfire-plugin",
         },
         method="POST",
     )
