@@ -25,7 +25,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 OTLP_EVENTS = {"SessionStart", "Stop", "SubagentStop", "SessionEnd"}
 
@@ -232,6 +232,7 @@ def send_otlp(payload: dict, endpoint: str, token: str) -> None:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
+            "User-Agent": "claude-code-logfire-plugin",
         },
         method="POST",
     )
