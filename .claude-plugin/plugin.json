@@ -1,5 +1,5 @@
 {
   "name": "logfire-session-capture",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Captures Claude Code sessions and exports pydantic-ai compatible OTel traces to Pydantic Logfire, with local JSONL fallback."
 }

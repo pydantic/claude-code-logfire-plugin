@@ -25,7 +25,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 
 OTLP_EVENTS = {"SessionStart", "Stop", "SubagentStop", "SessionEnd"}
 
