@@ -200,16 +200,56 @@ def build_span(
     return span
 
 
+def get_session_label() -> str:
+    """Return the session span name, configurable via LOGFIRE_SESSION_LABEL."""
+    return os.environ.get("LOGFIRE_SESSION_LABEL", "Claude Code session")
+
+
+def _parse_otel_resource_attributes() -> list[tuple[str, str]]:
+    """Parse OTEL_RESOURCE_ATTRIBUTES (key=value,key2=value2) into (key, value) pairs.
+
+    Handles values containing '=' correctly (splits on first '=' only).
+    Does not handle quoted values with embedded commas (uncommon in practice).
+    """
+    raw = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
+    if not raw:
+        return []
+    result = []
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if "=" not in pair:
+            continue
+        key, _, value = pair.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if key:
+            result.append((key, value))
+    return result
+
+
 def build_otlp_envelope(spans: list[dict]) -> dict:
+    # Start with hardcoded defaults
+    attrs: dict[str, str] = {
+        "service.name": "claude-code-plugin",
+        "service.version": VERSION,
+    }
+    # LOGFIRE_ENVIRONMENT → deployment.environment.name (Logfire-specific convenience)
+    logfire_env = os.environ.get("LOGFIRE_ENVIRONMENT", "")
+    if logfire_env:
+        attrs["deployment.environment.name"] = logfire_env
+    # OTEL_RESOURCE_ATTRIBUTES: standard env var, merges in and overrides defaults
+    for key, value in _parse_otel_resource_attributes():
+        attrs[key] = value
+    # OTEL_SERVICE_NAME takes final precedence over service.name per OTel spec
+    otel_service_name = os.environ.get("OTEL_SERVICE_NAME", "")
+    if otel_service_name:
+        attrs["service.name"] = otel_service_name
+
+    resource_attrs = [make_attr(k, v) for k, v in attrs.items()]
     return {
         "resourceSpans": [
             {
-                "resource": {
-                    "attributes": [
-                        make_attr("service.name", "claude-code-plugin"),
-                        make_attr("service.version", VERSION),
-                    ]
-                },
+                "resource": {"attributes": resource_attrs},
                 "scopeSpans": [
                     {
                         "scope": {
@@ -889,8 +929,9 @@ def handle_session_start(
 
         # Emit a pending span so Logfire shows the session as in-progress
         pending_span_id = random_span_id()
+        session_label = get_session_label()
         attrs = [
-            make_attr("logfire.msg", "Claude Code session"),
+            make_attr("logfire.msg", session_label),
             make_attr("logfire.span_type", "pending_span"),
             make_attr("logfire.pending_parent_id", parent_span_id_from_env or "0000000000000000"),
             make_attr("agent_name", "claude-code"),
@@ -908,7 +949,7 @@ def handle_session_start(
             trace_id,
             pending_span_id,
             root_span_id,
-            "Claude Code session",
+            session_label,
             ts_nano,
             ts_nano,
             attrs,
@@ -1044,8 +1085,9 @@ def handle_session_end(
                 break
 
         # Build root span attributes
+        session_label = get_session_label()
         attrs = [
-            make_attr("logfire.msg", "Claude Code session"),
+            make_attr("logfire.msg", session_label),
             make_attr("logfire.span_type", "span"),
             make_attr("agent_name", "claude-code"),
             make_attr("gen_ai.agent.name", "claude-code"),
@@ -1094,7 +1136,7 @@ def handle_session_end(
             trace_id,
             root_span_id,
             state_parent_span_id,
-            "Claude Code session",
+            session_label,
             int(start_time),
             ts_nano,
             attrs,
