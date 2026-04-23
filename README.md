@@ -49,6 +49,10 @@ export LOGFIRE_BASE_URL="https://logfire-eu.pydantic.dev"
 | `LOGFIRE_BASE_URL` | No | `https://logfire-us.pydantic.dev` | Logfire ingest endpoint |
 | `LOGFIRE_LOCAL_LOG` | No | `false` | Set to `true` to write JSONL event logs locally |
 | `LOGFIRE_DIAGNOSTICS` | No | `false` | Set to `true` to write diagnostic logs (enabled automatically when `LOGFIRE_LOCAL_LOG` is set) |
+| `LOGFIRE_ENVIRONMENT` | No | _(none)_ | Sets `deployment.environment.name` on every trace (e.g. `production`, `dev`) |
+| `LOGFIRE_SESSION_LABEL` | No | `Claude Code session` | Label for the root session span — useful when running multiple CC sessions in one trace |
+| `OTEL_SERVICE_NAME` | No | `claude-code-plugin` | Overrides the `service.name` resource attribute |
+| `OTEL_RESOURCE_ATTRIBUTES` | No | _(none)_ | Standard OTel env var for additional resource attributes, e.g. `deployment.environment.name=prod,service.instance.id=worker-1` |
 
 Without `LOGFIRE_TOKEN`, no traces are sent. The plugin does nothing unless at least one of `LOGFIRE_TOKEN` or `LOGFIRE_LOCAL_LOG` is set.
 
