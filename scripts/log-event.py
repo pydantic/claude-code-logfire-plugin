@@ -23,6 +23,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import unquote
 from urllib.request import Request, urlopen
 
 VERSION = "0.4.2"
@@ -205,25 +206,43 @@ def get_session_label() -> str:
     return os.environ.get("LOGFIRE_SESSION_LABEL", "Claude Code session")
 
 
+def _decode_resource_attribute_component(raw: str) -> str | None:
+    """Percent-decode an OTEL_RESOURCE_ATTRIBUTES key/value component."""
+    if re.search(r"%(?![0-9A-Fa-f]{2})", raw):
+        return None
+    return unquote(raw)
+
+
 def _parse_otel_resource_attributes() -> list[tuple[str, str]]:
     """Parse OTEL_RESOURCE_ATTRIBUTES (key=value,key2=value2) into (key, value) pairs.
 
-    Handles values containing '=' correctly (splits on first '=' only).
-    Does not handle quoted values with embedded commas (uncommon in practice).
+    Per the OTel Resource SDK spec, keys and values are percent-decoded and
+    the entire env var is discarded on parse/decode errors.
     """
     raw = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
     if not raw:
         return []
+
     result = []
     for pair in raw.split(","):
-        pair = pair.strip()
-        if "=" not in pair:
-            continue
-        key, _, value = pair.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if key:
-            result.append((key, value))
+        if not pair or "=" not in pair:
+            log_diag("warn", "Invalid OTEL_RESOURCE_ATTRIBUTES, discarding", "malformed key/value pair")
+            return []
+
+        key_raw, _, value_raw = pair.partition("=")
+        # Unencoded '=' in either component is invalid per the spec.
+        if not key_raw or "=" in value_raw:
+            log_diag("warn", "Invalid OTEL_RESOURCE_ATTRIBUTES, discarding", "unencoded '=' in key/value pair")
+            return []
+
+        key = _decode_resource_attribute_component(key_raw)
+        value = _decode_resource_attribute_component(value_raw)
+        if key is None or value is None:
+            log_diag("warn", "Invalid OTEL_RESOURCE_ATTRIBUTES, discarding", "invalid percent-encoding")
+            return []
+
+        result.append((key, value))
+
     return result
 
 
