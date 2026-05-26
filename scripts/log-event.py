@@ -26,7 +26,15 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote
 from urllib.request import Request, urlopen
 
-VERSION = "0.4.6"
+# ``oauth_token`` reads VERSION from .claude-plugin/plugin.json so we don't
+# have to keep it in sync by hand. Adjust sys.path so the import works
+# regardless of where this script is invoked from.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from oauth_token import USER_AGENT, VERSION
+except ImportError:
+    VERSION = "unknown"
+    USER_AGENT = "claude-code-logfire-plugin"
 
 OTLP_EVENTS = {"SessionStart", "Stop", "SubagentStop", "SessionEnd"}
 
@@ -291,7 +299,7 @@ def send_otlp(payload: dict, endpoint: str, token: str) -> None:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
-            "User-Agent": "claude-code-logfire-plugin",
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )
@@ -701,11 +709,7 @@ def _extract_tools_from_messages(messages: list[dict]) -> tuple[list[str], str |
 
 def _has_thinking(messages: list[dict]) -> bool:
     """Check if any message contains a thinking block."""
-    return any(
-        p.get("type") == "thinking"
-        for msg in messages
-        for p in msg.get("parts", [])
-    )
+    return any(p.get("type") == "thinking" for msg in messages for p in msg.get("parts", []))
 
 
 def _extract_user_snippet(input_messages: list[dict], max_len: int = 60) -> str | None:
@@ -739,9 +743,7 @@ def _describe_call(input_messages: list[dict], output_messages: list[dict]) -> s
 
     user_snippet = _extract_user_snippet(input_messages)
     has_tool_results = any(
-        p.get("type") == "tool_call_response"
-        for msg in input_messages
-        for p in msg.get("parts", [])
+        p.get("type") == "tool_call_response" for msg in input_messages for p in msg.get("parts", [])
     )
 
     thinking_prefix = "Thinking + " if thinking else ""
@@ -1259,12 +1261,30 @@ def main() -> None:
         except OSError:
             log_diag("error", "Failed to write JSONL log entry")
 
-    # OTel export requires token
+    # OTel export requires a token. Prefer the explicit LOGFIRE_TOKEN env var
+    # for backwards compatibility; otherwise fall back to a stored OAuth
+    # bundle (auto-refreshed) populated by ``scripts/auth.py login``. The
+    # OAuth bundle records its own base_url and overrides $LOGFIRE_BASE_URL,
+    # since the access token is bound to that resource.
     logfire_token = os.environ.get("LOGFIRE_TOKEN", "")
-    if not logfire_token:
-        return
+    if logfire_token:
+        base_url = os.environ.get("LOGFIRE_BASE_URL", "https://logfire-us.pydantic.dev").rstrip("/")
+    else:
+        try:
+            from oauth_token import get_access_token
 
-    base_url = os.environ.get("LOGFIRE_BASE_URL", "https://logfire-us.pydantic.dev").rstrip("/")
+            # On SessionEnd we're racing a /exit-driven SIGTERM against a 30s
+            # hook budget, and the eager root-span send (added in 0f1b117)
+            # has to ship before any blocking work. Skip the lazy refresh if
+            # the access token still has any life left — the next session's
+            # SessionStart will refresh.
+            result = get_access_token(skip_refresh_if_valid=(_hook_event == "SessionEnd"))
+        except (ImportError, OSError, ValueError) as exc:
+            log_diag("warn", "OAuth token lookup failed", str(exc))
+            result = None
+        if not result:
+            return
+        logfire_token, base_url = result
     otlp_endpoint = f"{base_url}/v1/traces"
 
     # Only process OTLP events

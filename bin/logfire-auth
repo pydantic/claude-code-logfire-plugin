@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Plugin-PATH wrapper for scripts/auth.py.
+#
+# Claude Code adds this plugin's bin/ to PATH, so slash commands can invoke
+# `logfire-auth ...` directly without an explicit $CLAUDE_PLUGIN_ROOT expansion
+# (which the slash-command permission checker rejects as "simple_expansion").
+# $CLAUDE_PLUGIN_ROOT isn't exported into the spawned subshell, so we locate
+# the plugin root from the wrapper's own path: bin/<this script>'s parent dir.
+PLUGIN_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &> /dev/null && pwd)
+exec python3 "$PLUGIN_ROOT/scripts/auth.py" "$@"

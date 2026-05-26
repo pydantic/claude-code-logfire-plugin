@@ -8,9 +8,17 @@ A Claude Code plugin that captures sessions and exports pydantic-ai compatible O
 
 ## Architecture
 
-The entire plugin is a single Python script (`scripts/log-event.py`) invoked by every hook event defined in `hooks/hooks.json`. The plugin manifest lives at `.claude-plugin/plugin.json`.
+The plugin has three Python scripts (all stdlib only) and an `hooks/hooks.json`:
 
-**Data flow:** Claude Code hook fires -> stdin JSON piped to `log-event.py` -> appends JSONL locally -> if `LOGFIRE_TOKEN` set and event is SessionStart/Stop/SubagentStop/SessionEnd, builds OTLP/HTTP JSON payload and sends via `urllib`.
+- `scripts/log-event.py` — invoked by every hook event; builds and ships OTLP spans.
+- `scripts/oauth_token.py` — shared module: load/save/refresh OAuth token bundle at `~/.logfire/claude-code-logfire-plugin.json`. Used by both the hook and the CLI.
+- `scripts/auth.py` — user-facing CLI for the OAuth Device Authorization Grant (RFC 8628) login / logout / status. Invoked by the `/logfire-session-capture:login`, `/logfire-session-capture:logout`, `/logfire-session-capture:status` slash commands under `commands/`.
+
+The plugin manifest lives at `.claude-plugin/plugin.json`.
+
+**Data flow:** Claude Code hook fires -> stdin JSON piped to `log-event.py` -> appends JSONL locally -> if a token is available (either `LOGFIRE_TOKEN` env var or a stored OAuth bundle that gets auto-refreshed inline) and event is SessionStart/Stop/SubagentStop/SessionEnd, builds OTLP/HTTP JSON payload and sends via `urllib`.
+
+**Auth resolution order:** `LOGFIRE_TOKEN` env var (highest precedence, backwards-compatible; uses `$LOGFIRE_BASE_URL` for the OTLP endpoint) → stored OAuth bundle (a single bundle at `~/.logfire/claude-code-logfire-plugin.json` recording its own `base_url`; refreshed if within 60s of expiry; refresh is serialised via an `os.mkdir` lock so concurrent sessions don't race refresh-token rotation). Only one OAuth bundle is stored at a time — re-running login overwrites the previous one. If neither auth source is available, the OTel export path is skipped silently.
 
 **Session state:** A temp file (`$TMPDIR/claude-logfire-{session_id}.json`) persists the root span ID, start time, transcript line offset, accumulated messages, usage totals, and cost details between hook invocations. Created on `SessionStart`, deleted on `SessionEnd`.
 
