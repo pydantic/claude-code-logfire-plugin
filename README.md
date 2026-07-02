@@ -51,6 +51,7 @@ export LOGFIRE_BASE_URL="https://logfire-eu.pydantic.dev"
 | `LOGFIRE_DIAGNOSTICS` | No | `false` | Set to `true` to write diagnostic logs (enabled automatically when `LOGFIRE_LOCAL_LOG` is set) |
 | `LOGFIRE_ENVIRONMENT` | No | _(none)_ | Sets `deployment.environment.name` on every trace (e.g. `production`, `dev`) |
 | `LOGFIRE_SESSION_LABEL` | No | `Claude Code session` | Label for the root session span — useful when running multiple CC sessions in one trace |
+| `LOGFIRE_GENAI_PRICES` | No | `false` | Set to `true` to price non-Anthropic models via [genai-prices](https://github.com/pydantic/genai-prices) (see [Pricing non-Anthropic models](#pricing-non-anthropic-models)). Requires `genai-prices` installed in the hooks' Python |
 | `OTEL_SERVICE_NAME` | No | `claude-code-plugin` | Overrides the `service.name` resource attribute |
 | `OTEL_RESOURCE_ATTRIBUTES` | No | _(none)_ | Standard OTel env var for additional resource attributes, e.g. `deployment.environment.name=prod,service.instance.id=worker-1` |
 
@@ -75,6 +76,17 @@ Each `chat` child span includes:
 - **Finish reason** (`gen_ai.response.finish_reasons`)
 
 The root span carries the full conversation, so you can inspect the entire session in Logfire's trace view.
+
+### Pricing non-Anthropic models
+
+By default the plugin prices Anthropic models (opus/sonnet/haiku) from a small built-in table, using only the standard library — no dependencies, no network.
+
+If you point Claude Code at an Anthropic-compatible endpoint via `ANTHROPIC_BASE_URL` (e.g. z.ai/GLM, Moonshot/Kimi, MiniMax), those models aren't in the built-in table, so `operation.cost` is omitted (token counts are still recorded). To price them, opt in:
+
+1. Install [`genai-prices`](https://github.com/pydantic/genai-prices) into the Python that runs your Claude Code hooks: `pip install genai-prices`.
+2. Set `LOGFIRE_GENAI_PRICES=true`.
+
+The plugin then prices any model genai-prices knows (matched by model name); models it doesn't know still just omit cost. This stays opt-in so the default install keeps its stdlib-only, offline behaviour. To refresh prices, update the package (`pip install -U genai-prices`).
 
 ## Distributed tracing
 

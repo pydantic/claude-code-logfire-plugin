@@ -318,6 +318,65 @@ def get_model_prices(model: str) -> tuple[float, float] | None:
     return None
 
 
+_genai_import_warned = False
+
+
+def _genai_cost(
+    model: str, raw_input: int, output_tokens: int, cache_creation: int, cache_read: int
+) -> tuple[float, float, str] | None:
+    """(input_cost, output_cost, provider) via genai-prices — opt-in, off by default.
+
+    Enabled only when LOGFIRE_GENAI_PRICES is set. Lets users running non-Anthropic models
+    through an Anthropic-compatible endpoint (ANTHROPIC_BASE_URL -> z.ai, Moonshot, MiniMax, …)
+    get cost, without adding a dependency to the default stdlib-only path — they install
+    `genai-prices` themselves into the Python that runs the hooks.
+
+    genai-prices treats Usage.input_tokens as the *inclusive* total, with cache_write/cache_read
+    as subsets billed at their own rates (the inverse of Anthropic's uncached convention), so we
+    pass the combined input and let it split.
+    """
+    global _genai_import_warned
+    if os.environ.get("LOGFIRE_GENAI_PRICES", "false") not in ("true", "1"):
+        return None
+    try:
+        from genai_prices import Usage, calc_price
+    except ImportError:
+        if not _genai_import_warned:
+            log_diag(
+                "warn",
+                "LOGFIRE_GENAI_PRICES is set but genai-prices is not installed",
+                "install it into the Python that runs Claude Code hooks, e.g. `pip install genai-prices`",
+            )
+            _genai_import_warned = True
+        return None
+    try:
+        priced = calc_price(
+            Usage(
+                input_tokens=raw_input + cache_creation + cache_read,
+                cache_write_tokens=cache_creation or None,
+                cache_read_tokens=cache_read or None,
+                output_tokens=output_tokens,
+            ),
+            model_ref=model,
+        )
+    except Exception:
+        # Unknown model or any genai-prices hiccup must never break telemetry — leave cost unset.
+        return None
+    return float(priced.input_price), float(priced.output_price), priced.provider.id
+
+
+def _price_call(
+    model: str, raw_input: int, output_tokens: int, cache_creation: int = 0, cache_read: int = 0
+) -> tuple[float, float, str] | None:
+    """(input_cost, output_cost, provider): built-in Anthropic table first, then opt-in genai-prices."""
+    prices = get_model_prices(model)
+    if prices:
+        ip, op = prices
+        input_cost = (raw_input * ip) + (cache_creation * ip * 1.25) + (cache_read * ip * 0.1)
+        return input_cost, output_tokens * op, "anthropic"
+    return _genai_cost(model, raw_input, output_tokens, cache_creation, cache_read)
+
+
 def calculate_cost(
     model: str,
     raw_input: int,
@@ -325,11 +384,11 @@ def calculate_cost(
     cache_creation: int = 0,
     cache_read: int = 0,
 ) -> float | None:
-    prices = get_model_prices(model)
-    if not prices:
+    priced = _price_call(model, raw_input, output_tokens, cache_creation, cache_read)
+    if priced is None:
         return None
-    ip, op = prices
-    return (raw_input * ip) + (cache_creation * ip * 1.25) + (cache_read * ip * 0.1) + (output_tokens * op)
+    input_cost, output_cost, _ = priced
+    return input_cost + output_cost
 
 
 def build_cost_details(
@@ -339,18 +398,16 @@ def build_cost_details(
     cache_creation: int = 0,
     cache_read: int = 0,
 ) -> list[dict] | None:
-    prices = get_model_prices(model)
-    if not prices:
+    priced = _price_call(model, raw_input, output_tokens, cache_creation, cache_read)
+    if priced is None:
         return None
-    ip, op = prices
-    input_cost = (raw_input * ip) + (cache_creation * ip * 1.25) + (cache_read * ip * 0.1)
-    output_cost = output_tokens * op
+    input_cost, output_cost, provider = priced
     base_attrs = {
         "gen_ai.operation.name": "chat",
-        "gen_ai.provider.name": "anthropic",
+        "gen_ai.provider.name": provider,
         "gen_ai.request.model": model,
         "gen_ai.response.model": model,
-        "gen_ai.system": "anthropic",
+        "gen_ai.system": provider,
     }
     return [
         {"attributes": {**base_attrs, "gen_ai.token.type": "input"}, "total": input_cost},
