@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote
 from urllib.request import Request, urlopen
 
-VERSION = "0.4.6"
+VERSION = "0.4.7"
 
 OTLP_EVENTS = {"SessionStart", "Stop", "SubagentStop", "SessionEnd"}
 

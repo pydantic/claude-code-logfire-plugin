@@ -1,5 +1,19 @@
 # Logfire plugin for Claude Code
 
+> [!IMPORTANT]
+> New installations should use Claude Code's native OpenTelemetry integration,
+> configured by `logfire-cli`, instead of this legacy hook-based session
+> exporter. Native telemetry follows Claude Code's supported event schema,
+> keeps project credentials out of `settings.json`, and can be removed without
+> uninstalling unrelated plugins:
+>
+> ```bash
+> uvx --refresh logfire-cli --beta agent claude configure
+> uvx --refresh logfire-cli --beta agent claude status
+> ```
+>
+> This plugin remains available for existing installations while they migrate.
+
 A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that sends OpenTelemetry traces to [Pydantic Logfire](https://logfire.pydantic.dev), giving you full observability into your Claude Code sessions.
 
 Each session becomes a trace with child spans per LLM API call, with full token usage, cost tracking, and conversation history visible in Logfire.
@@ -8,13 +22,37 @@ Each session becomes a trace with child spans per LLM API call, with full token 
 
 ## Installation
 
+### Recommended: native Claude Code telemetry
+
+Connect the current directory to the intended Logfire project, configure
+Claude Code, then restart it:
+
+```bash
+uvx --refresh logfire-cli auth
+uvx --refresh logfire-cli init use --name YOUR_PROJECT
+uvx --refresh logfire-cli --beta agent claude configure
+```
+
+Use `--capture metadata-only` if prompts and tool arguments must not be sent:
+
+```bash
+uvx --refresh logfire-cli --beta agent claude configure --capture metadata-only
+```
+
+The command uses Claude Code's documented `otelHeadersHelper`; it does not put
+the project token in Claude's settings. See the current
+[`logfire-cli` Claude guide](https://github.com/pydantic/logfire-cli/blob/main/docs/commands/claude.md)
+for status, removal, capture, and conflict behavior.
+
+### Legacy hook plugin
+
 ### System requirements
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
 - A [Logfire](https://logfire.pydantic.dev) project with a write token
 - `python3` (3.7+) — pre-installed on macOS and most Linux distributions; uses stdlib only (no pip dependencies)
 
-### Install the plugin
+#### Install the plugin
 
 From within Claude Code, run:
 
@@ -23,13 +61,13 @@ From within Claude Code, run:
 /plugin install logfire-session-capture@pydantic-claude-code-logfire-plugin
 ```
 
-### Update the plugin
+#### Update the plugin
 
 ```
 /plugin update logfire-session-capture@pydantic-claude-code-logfire-plugin
 ```
 
-### Set your Logfire token
+#### Set your Logfire token
 
 ```bash
 export LOGFIRE_TOKEN="your-logfire-write-token"
@@ -139,3 +177,18 @@ State is persisted in a temp file between hook invocations. The `trace_id` is de
 ## License
 
 MIT
+
+## Migrating an existing installation
+
+1. Configure and verify native telemetry with `logfire-cli`.
+2. Restart Claude Code and confirm a new prompt appears in Logfire.
+3. Disable or uninstall `logfire-session-capture` so the legacy hook exporter
+   does not duplicate native records.
+
+```bash
+claude plugin disable logfire-session-capture@pydantic-claude-code-logfire-plugin
+uvx --refresh logfire-cli --beta agent claude status
+```
+
+The old plugin's `LOGFIRE_TOKEN` is independent of the CLI-managed credential.
+Remove it from your shell only after other applications no longer need it.

@@ -1,5 +1,9 @@
 {
   "name": "logfire-session-capture",
-  "version": "0.4.6",
-  "description": "Captures Claude Code sessions and exports pydantic-ai compatible OTel traces to Pydantic Logfire, with local JSONL fallback."
+  "version": "0.4.7",
+  "description": "Legacy hook-based Claude Code telemetry exporter with a migration path to Logfire's native integration.",
+  "author": {
+    "name": "Pydantic",
+    "email": "support@pydantic.dev"
+  }
 }
